@@ -1,6 +1,6 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -36,6 +36,38 @@ describe('loadCorridors', () => {
     ]);
 
     expect(() => loadCorridors(path)).toThrow(/alias/i);
+  });
+
+  it('rejects blank corridor ids and line ids', () => {
+    const blankIdPath = writeCorridorsFile([
+      { id: '   ', aliases: ['Weserpark'], line_ids: ['25'] },
+    ]);
+    const blankLineIdPath = writeCorridorsFile([
+      { id: 'east', aliases: ['Weserpark'], line_ids: ['   '] },
+    ]);
+
+    expect(() => loadCorridors(blankIdPath)).toThrow();
+    expect(() => loadCorridors(blankLineIdPath)).toThrow();
+  });
+
+  it('rejects ids and aliases that normalize to empty text', () => {
+    const punctuationIdPath = writeCorridorsFile([
+      { id: '---', aliases: ['Weserpark'], line_ids: ['25'] },
+    ]);
+    const punctuationAliasPath = writeCorridorsFile([
+      { id: 'east', aliases: ['---'], line_ids: ['25'] },
+    ]);
+
+    expect(() => loadCorridors(punctuationIdPath)).toThrow();
+    expect(() => loadCorridors(punctuationAliasPath)).toThrow();
+  });
+
+  it('rejects line ids that normalize to empty text', () => {
+    const punctuationLineIdPath = writeCorridorsFile([
+      { id: 'east', aliases: ['Weserpark'], line_ids: ['---'] },
+    ]);
+
+    expect(() => loadCorridors(punctuationLineIdPath)).toThrow();
   });
 });
 

@@ -1,55 +1,43 @@
 import { z } from 'zod';
 
-const envSchema = z
-  .object({
-    TZ: z.literal('Europe/Berlin').default('Europe/Berlin'),
-    HTTP_HOST: z.string().default('127.0.0.1'),
-    RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
-    REALTIME_REFRESH_INTERVAL_SECONDS: z.coerce
-      .number()
-      .int()
-      .min(5)
-      .max(3600)
-      .default(60),
-    VBN_REALTIME_JSON_URL: z
-      .string()
-      .url()
-      .default('http://gtfsr.vbn.de/gtfsr_connect.json'),
-    VBN_REALTIME_PROTOBUF_URL: z
-      .string()
-      .url()
-      .default('http://gtfsr.vbn.de/gtfsr_connect.bin'),
-    VBN_NOTICES_URL: z
-      .string()
-      .url()
-      .default(
-        'https://www.vbn.de/vbn/verkehrshinweise/bus-und-strassenbahnverkehr',
-      ),
-    BSAG_NEWS_URL: z
-      .string()
-      .url()
-      .default('https://www.bsag.de/unternehmen/aktuelles'),
-    VMZ_CURRENT_URL: z
-      .string()
-      .url()
-      .default('https://vmz.bremen.de/baustellen/aktuell'),
-    VMZ_PREVIEW_URL: z
-      .string()
-      .url()
-      .default('https://vmz.bremen.de/baustellen/vorschau'),
-    VMZ_OVERVIEW_URL: z
-      .string()
-      .url()
-      .default('https://vmz.bremen.de/baustellen/baustellenuebersicht'),
-    VMZ_RSS_URL: z
-      .string()
-      .url()
-      .default('https://vmz.bremen.de/verkehrslage/aktuell/feed.rss'),
-    BREMEN_EVENTS_URL: z
-      .string()
-      .url()
-      .default('https://www.bremen.de/kultur/veranstaltungen'),
-  });
+const urlSchema = z.url();
+
+const envSchema = z.object({
+  TZ: z.literal('Europe/Berlin').default('Europe/Berlin'),
+  HTTP_HOST: z.string().default('127.0.0.1'),
+  RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  REALTIME_REFRESH_INTERVAL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(5)
+    .max(3600)
+    .default(60),
+  VBN_REALTIME_JSON_URL: urlSchema.default(
+    'http://gtfsr.vbn.de/gtfsr_connect.json',
+  ),
+  VBN_REALTIME_PROTOBUF_URL: urlSchema.default(
+    'http://gtfsr.vbn.de/gtfsr_connect.bin',
+  ),
+  VBN_NOTICES_URL: urlSchema.default(
+    'https://www.vbn.de/vbn/verkehrshinweise/bus-und-strassenbahnverkehr',
+  ),
+  BSAG_NEWS_URL: urlSchema.default('https://www.bsag.de/unternehmen/aktuelles'),
+  VMZ_CURRENT_URL: urlSchema.default(
+    'https://vmz.bremen.de/baustellen/aktuell',
+  ),
+  VMZ_PREVIEW_URL: urlSchema.default(
+    'https://vmz.bremen.de/baustellen/vorschau',
+  ),
+  VMZ_OVERVIEW_URL: urlSchema.default(
+    'https://vmz.bremen.de/baustellen/baustellenuebersicht',
+  ),
+  VMZ_RSS_URL: urlSchema.default(
+    'https://vmz.bremen.de/verkehrslage/aktuell/feed.rss',
+  ),
+  BREMEN_EVENTS_URL: urlSchema.default(
+    'https://www.bremen.de/kultur/veranstaltungen',
+  ),
+});
 
 export interface EnvConfig {
   timezone: 'Europe/Berlin';
@@ -87,11 +75,13 @@ function deepFreeze<T>(value: T): Readonly<T> {
   return value;
 }
 
-export function loadEnv(input: Record<string, string | undefined>): Readonly<EnvConfig> {
+export function loadEnv(
+  input: Record<string, string | undefined>,
+): Readonly<EnvConfig> {
   const parsed = envSchema.parse(input);
 
   return deepFreeze({
-    timezone: parsed.TZ as 'Europe/Berlin',
+    timezone: parsed.TZ,
     http: {
       host: parsed.HTTP_HOST,
     },

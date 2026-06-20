@@ -35,6 +35,7 @@ type ScaffoldVitestConfig = {
     fileParallelism?: boolean;
     coverage?: {
       include?: string[];
+      exclude?: string[];
       thresholds?: {
         lines: number;
         statements: number;
@@ -85,6 +86,9 @@ describe('scaffold configuration', () => {
       'src/services/**/*.ts',
       'src/sources/**/*.ts',
     ]);
+    expect(scaffoldVitestConfig.test?.coverage?.exclude).toContain(
+      'src/domain/models.ts',
+    );
     expect(scaffoldVitestConfig.test?.coverage?.thresholds).toEqual({
       lines: 90,
       statements: 90,

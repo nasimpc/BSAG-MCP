@@ -18,7 +18,11 @@ export interface TimeInterval {
   end: Date;
 }
 
-function parseDateOnly(value: string): { year: number; month: number; day: number } {
+function parseDateOnly(value: string): {
+  year: number;
+  month: number;
+  day: number;
+} {
   if (!DATE_ONLY_PATTERN.test(value)) {
     throw new InputError(`Expected a YYYY-MM-DD date, received "${value}"`);
   }
@@ -47,7 +51,10 @@ function toUtcDate(value: TZDate): Date {
   return new Date(value.getTime());
 }
 
-export function parseBerlinRange(startDate: string, endDate: string): TimeInterval {
+export function parseBerlinRange(
+  startDate: string,
+  endDate: string,
+): TimeInterval {
   const startParts = parseDateOnly(startDate);
   const endParts = parseDateOnly(endDate);
   const start = toUtcDate(
@@ -79,7 +86,11 @@ export function parseBerlinRange(startDate: string, endDate: string): TimeInterv
     throw new InputError('Start date must not be after end date');
   }
 
-  const startUtc = Date.UTC(startParts.year, startParts.month - 1, startParts.day);
+  const startUtc = Date.UTC(
+    startParts.year,
+    startParts.month - 1,
+    startParts.day,
+  );
   const endUtc = Date.UTC(endParts.year, endParts.month - 1, endParts.day);
   const rangeDays = Math.floor((endUtc - startUtc) / 86_400_000) + 1;
 
@@ -91,9 +102,14 @@ export function parseBerlinRange(startDate: string, endDate: string): TimeInterv
 }
 
 export function intervalsOverlap(a: TimeInterval, b: TimeInterval): boolean {
-  if (a.start.getTime() > a.end.getTime() || b.start.getTime() > b.end.getTime()) {
+  if (
+    a.start.getTime() > a.end.getTime() ||
+    b.start.getTime() > b.end.getTime()
+  ) {
     throw new InputError('Interval start must not be after interval end');
   }
 
-  return a.start.getTime() <= b.end.getTime() && b.start.getTime() <= a.end.getTime();
+  return (
+    a.start.getTime() <= b.end.getTime() && b.start.getTime() <= a.end.getTime()
+  );
 }

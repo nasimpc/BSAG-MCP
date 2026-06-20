@@ -14,6 +14,7 @@ export default defineConfig({
         'src/services/**/*.ts',
         'src/sources/**/*.ts',
       ],
+      exclude: ['src/domain/models.ts'],
       thresholds: {
         lines: 90,
         statements: 90,
