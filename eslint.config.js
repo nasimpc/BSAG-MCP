@@ -16,6 +16,12 @@ export default tseslint.config(
   },
   {
     files: ['tests/**/*.ts', 'vitest.config.ts'],
-    extends: [...tseslint.configs.strict],
+    extends: [...tseslint.configs.strictTypeChecked],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.test.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
   },
 );
