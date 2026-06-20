@@ -1,162 +1,204 @@
 import { Buffer } from 'node:buffer';
 
+import pLimit from 'p-limit';
+import type { Logger } from 'pino';
 import { request, type Dispatcher } from 'undici';
 
-import type { SourceId } from '../domain/models.js';
 import { logger as defaultLogger } from '../shared/logger.js';
+import { SERVER_INFO } from '../version.js';
 
-const MAX_TRANSIENT_RETRIES = 2;
-const MAX_REDIRECTS = 3;
-const BACKOFF_BASE_MS = 100;
+const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
+const DEFAULT_MAX_REDIRECTS = 3;
+const DEFAULT_BACKOFF_BASE_MS = 100;
+const DEFAULT_PER_HOST_CONCURRENCY = 2;
+const DEFAULT_NETWORK_ERROR_CODE = 'SOURCE_NETWORK_ERROR';
 const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
 const TRANSIENT_STATUS_CODES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
-export interface SourceFetchPolicy {
-  sourceId: SourceId;
-  timeoutMs: number;
+export interface BaseFetchPolicy {
+  expectedTypes: readonly string[];
   maxBytes: number;
-  expectedMimeTypes: readonly string[];
+  timeoutMs: number;
 }
 
-export interface SourceBytesResponse {
-  url: string;
-  mimeType: string;
-  bytes: Uint8Array;
+export type TextFetchPolicy = BaseFetchPolicy;
+
+export type BinaryFetchPolicy = BaseFetchPolicy;
+
+export interface FetchResponse<T> {
+  body: T;
+  finalUrl: URL;
+  contentType: string;
+  statusCode: number;
   attempts: number;
   redirectCount: number;
-  statusCode: number;
 }
 
-export interface SourceTextResponse extends SourceBytesResponse {
-  text: string;
+export interface SourceHttpClientOptions {
+  allowedSourceUrls: readonly string[];
+  dispatcher?: Dispatcher;
+  logger?: Logger;
+  sleeper?: (delayMs: number) => Promise<void>;
+  jitter?: () => number;
+  userAgent?: string;
+  perHostConcurrency?: number;
+  maxTransientRetries?: number;
+  maxRedirects?: number;
+  backoffBaseMs?: number;
 }
 
 export class SourceHttpClientError extends Error {
+  readonly statusCode: number | undefined;
+
   constructor(
     message: string,
     readonly code: string,
     readonly retryable: boolean,
-    readonly cause?: unknown,
+    options: {
+      cause?: unknown;
+      statusCode?: number;
+    } = {},
   ) {
-    super(message, cause === undefined ? undefined : { cause });
+    super(
+      message,
+      options.cause === undefined ? undefined : { cause: options.cause },
+    );
     this.name = 'SourceHttpClientError';
+    this.statusCode = options.statusCode;
   }
 }
 
 export class SourceHttpClient {
-  constructor(
-    private readonly options: {
-      allowedHost: string;
-      dispatcher: Dispatcher;
-      logger?: typeof defaultLogger;
-      sleeper?: (delayMs: number) => Promise<void>;
-      jitter?: () => number;
-    },
-  ) {}
+  readonly #allowedHosts: ReadonlySet<string>;
+  readonly #dispatcher: Dispatcher | undefined;
+  readonly #logger: Logger;
+  readonly #sleeper: ((delayMs: number) => Promise<void>) | undefined;
+  readonly #jitter: (() => number) | undefined;
+  readonly #userAgent: string;
+  readonly #perHostConcurrency: number;
+  readonly #maxTransientRetries: number;
+  readonly #maxRedirects: number;
+  readonly #backoffBaseMs: number;
+  readonly #hostQueues = new Map<string, ReturnType<typeof pLimit>>();
+
+  constructor(options: SourceHttpClientOptions) {
+    this.#allowedHosts = new Set(
+      options.allowedSourceUrls.map((sourceUrl) =>
+        new URL(sourceUrl).host.toLowerCase(),
+      ),
+    );
+    this.#dispatcher = options.dispatcher;
+    this.#logger = options.logger ?? defaultLogger;
+    this.#sleeper = options.sleeper;
+    this.#jitter = options.jitter;
+    this.#userAgent =
+      options.userAgent ??
+      `${SERVER_INFO.name}/${SERVER_INFO.version} public-source-client`;
+    this.#perHostConcurrency =
+      options.perHostConcurrency ?? DEFAULT_PER_HOST_CONCURRENCY;
+    this.#maxTransientRetries =
+      options.maxTransientRetries ?? DEFAULT_MAX_TRANSIENT_RETRIES;
+    this.#maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
+    this.#backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
+  }
 
   async getText(
-    url: string,
-    policy: SourceFetchPolicy,
-  ): Promise<SourceTextResponse> {
-    const result = await this.fetch(url, policy);
+    url: URL,
+    policy: TextFetchPolicy,
+  ): Promise<FetchResponse<string>> {
+    const result = await this.getBytes(url, policy);
 
     return {
       ...result,
-      text: new TextDecoder().decode(result.bytes),
+      body: new TextDecoder().decode(result.body),
     };
   }
 
   async getBytes(
-    url: string,
-    policy: SourceFetchPolicy,
-  ): Promise<SourceBytesResponse> {
-    return this.fetch(url, policy);
-  }
-
-  private async fetch(
-    url: string,
-    policy: SourceFetchPolicy,
-  ): Promise<SourceBytesResponse> {
+    url: URL,
+    policy: BinaryFetchPolicy,
+  ): Promise<FetchResponse<Uint8Array>> {
     let attempt = 0;
-    let lastError: unknown;
 
-    while (attempt <= MAX_TRANSIENT_RETRIES) {
+    while (attempt <= this.#maxTransientRetries) {
       attempt += 1;
 
       try {
-        const response = await this.fetchWithRedirects(url, policy);
+        const result = await this.fetchWithRedirects(url, policy);
 
-        this.log().info({
+        this.#logger.info({
           event: 'source_http_success',
-          sourceId: policy.sourceId,
-          url: response.url,
-          statusCode: response.statusCode,
-          mimeType: response.mimeType,
-          byteCount: response.bytes.byteLength,
+          url: result.finalUrl.toString(),
+          statusCode: result.statusCode,
+          contentType: result.contentType,
+          byteCount: result.body.byteLength,
           attempts: attempt,
-          redirectCount: response.redirectCount,
+          redirectCount: result.redirectCount,
         });
 
         return {
-          ...response,
+          ...result,
           attempts: attempt,
         };
-      } catch (error) {
-        lastError = error;
+      } catch (rawError) {
+        const error = this.normalizeError(rawError);
 
-        if (!this.isRetryable(error) || attempt > MAX_TRANSIENT_RETRIES) {
-          this.log().warn({
+        if (!error.retryable || attempt > this.#maxTransientRetries) {
+          this.#logger.warn({
             event: 'source_http_failure',
-            sourceId: policy.sourceId,
-            url,
+            url: url.toString(),
             attempts: attempt,
-            error: error instanceof Error ? error.message : String(error),
+            code: error.code,
+            statusCode: error.statusCode,
+            error: error.message,
           });
-          break;
+          throw error;
         }
 
         const delayMs =
-          BACKOFF_BASE_MS * 2 ** (attempt - 1) + this.jitterValue();
+          this.#backoffBaseMs * 2 ** (attempt - 1) + this.jitterValue();
 
-        this.log().warn({
+        this.#logger.warn({
           event: 'source_http_retry',
-          sourceId: policy.sourceId,
-          url,
+          url: url.toString(),
           attempts: attempt,
+          code: error.code,
+          statusCode: error.statusCode,
           delayMs,
-          error: error instanceof Error ? error.message : String(error),
+          error: error.message,
         });
         await this.sleep(delayMs);
       }
     }
 
-    throw this.wrapError(lastError, 'Request failed');
+    throw new SourceHttpClientError(
+      'Request failed',
+      'SOURCE_REQUEST_FAILED',
+      false,
+    );
   }
 
   private async fetchWithRedirects(
-    initialUrl: string,
-    policy: SourceFetchPolicy,
-  ): Promise<Omit<SourceBytesResponse, 'attempts'>> {
+    initialUrl: URL,
+    policy: BaseFetchPolicy,
+  ): Promise<Omit<FetchResponse<Uint8Array>, 'attempts'>> {
     let currentUrl = new URL(initialUrl);
     let redirectCount = 0;
 
-    this.assertAllowedHost(currentUrl, 'Requested URL must use the allow-listed host');
+    this.assertAllowedHost(
+      currentUrl,
+      'HOST_NOT_ALLOWED',
+      'Requested URL must use the allow-listed host',
+    );
 
-    while (true) {
-      const response = await request(currentUrl, {
-        dispatcher: this.options.dispatcher,
-        method: 'GET',
-        signal: AbortSignal.timeout(policy.timeoutMs),
-        headers: {
-          accept: policy.expectedMimeTypes.join(', '),
-        },
-      });
+    for (;;) {
+      const response = await this.dispatchRequest(currentUrl, policy);
 
       if (REDIRECT_STATUS_CODES.has(response.statusCode)) {
-        if (redirectCount >= MAX_REDIRECTS) {
+        if (redirectCount >= this.#maxRedirects) {
           throw new SourceHttpClientError(
             'Too many redirects',
-            'TOO_MANY_REDIRECTS',
+            'SOURCE_TOO_MANY_REDIRECTS',
             false,
           );
         }
@@ -166,72 +208,112 @@ export class SourceHttpClient {
         if (!location) {
           throw new SourceHttpClientError(
             'Redirect response did not include a location header',
-            'REDIRECT_LOCATION_MISSING',
+            'SOURCE_REDIRECT_LOCATION_MISSING',
             false,
           );
         }
 
-        const nextUrl = new URL(location, currentUrl);
-        this.assertAllowedHost(nextUrl, 'Redirect host must stay on the allow-listed host');
-        currentUrl = nextUrl;
+        currentUrl = new URL(location, currentUrl);
+        this.assertAllowedHost(
+          currentUrl,
+          'REDIRECT_HOST_NOT_ALLOWED',
+          'Redirect host must stay on the allow-listed host',
+        );
         redirectCount += 1;
         continue;
       }
 
       if (TRANSIENT_STATUS_CODES.has(response.statusCode)) {
         throw new SourceHttpClientError(
-          `Transient upstream status ${response.statusCode}`,
-          'TRANSIENT_STATUS',
+          'Transient upstream status ' + String(response.statusCode),
+          'SOURCE_HTTP_STATUS',
           true,
+          { statusCode: response.statusCode },
         );
       }
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw new SourceHttpClientError(
-          `Unexpected upstream status ${response.statusCode}`,
-          'UNEXPECTED_STATUS',
+          'Unexpected upstream status ' + String(response.statusCode),
+          'SOURCE_HTTP_STATUS',
           false,
+          { statusCode: response.statusCode },
         );
       }
 
-      const mimeType = normalizeMimeType(getHeader(response.headers['content-type']));
-      this.assertExpectedMimeType(mimeType, policy.expectedMimeTypes);
-      this.assertContentLength(getHeader(response.headers['content-length']), policy.maxBytes);
+      const contentType = normalizeMimeType(
+        getHeader(response.headers['content-type']),
+      );
+      this.assertExpectedContentType(contentType, policy.expectedTypes);
+      this.assertContentLength(
+        getHeader(response.headers['content-length']),
+        policy.maxBytes,
+      );
 
-      const bytes = await this.readBody(response.body, policy.maxBytes);
+      const body = await this.readBody(response.body, policy.maxBytes);
 
       return {
-        url: currentUrl.toString(),
-        mimeType,
-        bytes,
-        redirectCount,
+        body,
+        finalUrl: currentUrl,
+        contentType,
         statusCode: response.statusCode,
+        redirectCount,
       };
     }
   }
 
-  private assertAllowedHost(url: URL, message: string): void {
-    if (url.host !== this.options.allowedHost) {
-      throw new SourceHttpClientError(
-        message,
-        'HOST_NOT_ALLOWED',
-        false,
-      );
+  private async dispatchRequest(url: URL, policy: BaseFetchPolicy) {
+    return this.limitFor(url.host)(async () => {
+      const requestOptions = {
+        method: 'GET' as const,
+        signal: AbortSignal.timeout(policy.timeoutMs),
+        headers: {
+          accept: policy.expectedTypes.join(', '),
+          'user-agent': this.#userAgent,
+        },
+      };
+
+      if (this.#dispatcher) {
+        return request(url, {
+          ...requestOptions,
+          dispatcher: this.#dispatcher,
+        });
+      }
+
+      return request(url, requestOptions);
+    });
+  }
+
+  private limitFor(host: string) {
+    const normalizedHost = host.toLowerCase();
+    let limit = this.#hostQueues.get(normalizedHost);
+
+    if (!limit) {
+      limit = pLimit(this.#perHostConcurrency);
+      this.#hostQueues.set(normalizedHost, limit);
+    }
+
+    return limit;
+  }
+
+  private assertAllowedHost(url: URL, code: string, message: string): void {
+    if (!this.#allowedHosts.has(url.host.toLowerCase())) {
+      throw new SourceHttpClientError(message, code, false);
     }
   }
 
-  private assertExpectedMimeType(
-    mimeType: string,
-    expectedMimeTypes: readonly string[],
+  private assertExpectedContentType(
+    contentType: string,
+    expectedTypes: readonly string[],
   ): void {
-    const normalizedExpected = expectedMimeTypes.map((value) =>
+    const normalizedExpected = expectedTypes.map((value) =>
       normalizeMimeType(value),
     );
 
-    if (!normalizedExpected.includes(mimeType)) {
+    if (!normalizedExpected.includes(contentType)) {
       throw new SourceHttpClientError(
-        `Unexpected mime type "${mimeType}"`,
-        'UNEXPECTED_MIME',
+        `Unexpected content type "${contentType}"`,
+        'SOURCE_CONTENT_TYPE',
         false,
       );
     }
@@ -253,18 +335,21 @@ export class SourceHttpClient {
 
     if (declaredBytes > maxBytes) {
       throw new SourceHttpClientError(
-        `Response content-length ${declaredBytes} exceeds limit ${maxBytes}`,
-        'CONTENT_LENGTH_LIMIT',
+        'Response content-length ' +
+          String(declaredBytes) +
+          ' exceeds limit ' +
+          String(maxBytes),
+        'SOURCE_RESPONSE_TOO_LARGE',
         false,
       );
     }
   }
 
   private async readBody(
-    body: AsyncIterable<Buffer>,
+    body: AsyncIterable<Uint8Array>,
     maxBytes: number,
   ): Promise<Uint8Array> {
-    const chunks: Buffer[] = [];
+    const chunks: Uint8Array[] = [];
     let totalBytes = 0;
 
     for await (const chunk of body) {
@@ -272,8 +357,8 @@ export class SourceHttpClient {
 
       if (totalBytes > maxBytes) {
         throw new SourceHttpClientError(
-          `Response byte limit ${maxBytes} exceeded`,
-          'BYTE_LIMIT_EXCEEDED',
+          'Response byte limit ' + String(maxBytes) + ' exceeded',
+          'SOURCE_RESPONSE_TOO_LARGE',
           false,
         );
       }
@@ -284,37 +369,50 @@ export class SourceHttpClient {
     return Buffer.concat(chunks);
   }
 
-  private isRetryable(error: unknown): boolean {
-    if (error instanceof SourceHttpClientError) {
-      return error.retryable;
+  private normalizeError(rawError: unknown): SourceHttpClientError {
+    if (rawError instanceof SourceHttpClientError) {
+      return rawError;
     }
 
-    if (error instanceof Error) {
-      return (
-        error.name === 'AbortError' ||
-        /socket|connect|timeout|reset|econn/i.test(error.message)
-      );
-    }
+    if (rawError instanceof Error) {
+      if (
+        rawError.name === 'AbortError' ||
+        rawError.name === 'TimeoutError' ||
+        rawError.message.includes('This operation was aborted')
+      ) {
+        return new SourceHttpClientError(
+          'Request timed out',
+          'SOURCE_TIMEOUT',
+          true,
+          { cause: rawError },
+        );
+      }
 
-    return false;
-  }
-
-  private wrapError(error: unknown, fallbackMessage: string): Error {
-    if (error instanceof Error) {
-      return error;
+      if (
+        /socket|connect|timeout|reset|econn|enotfound|eai_again/i.test(
+          rawError.message,
+        )
+      ) {
+        return new SourceHttpClientError(
+          rawError.message,
+          DEFAULT_NETWORK_ERROR_CODE,
+          true,
+          { cause: rawError },
+        );
+      }
     }
 
     return new SourceHttpClientError(
-      fallbackMessage,
-      'REQUEST_FAILED',
+      'Request failed',
+      'SOURCE_REQUEST_FAILED',
       false,
-      error,
+      { cause: rawError },
     );
   }
 
   private async sleep(delayMs: number): Promise<void> {
     const sleeper =
-      this.options.sleeper ??
+      this.#sleeper ??
       (async (value: number) => {
         await new Promise<void>((resolve) => {
           setTimeout(resolve, value);
@@ -325,11 +423,10 @@ export class SourceHttpClient {
   }
 
   private jitterValue(): number {
-    return Math.max(0, Math.floor((this.options.jitter ?? (() => Math.random() * 25))()));
-  }
-
-  private log() {
-    return this.options.logger ?? defaultLogger;
+    return Math.max(
+      0,
+      Math.floor((this.#jitter ?? (() => Math.random() * 25))()),
+    );
   }
 }
 
@@ -342,5 +439,9 @@ function getHeader(value: string | string[] | undefined): string | undefined {
 }
 
 function normalizeMimeType(value: string | undefined): string {
-  return (value ?? 'application/octet-stream').split(';', 1)[0]!.trim().toLowerCase();
+  const [mimeType = 'application/octet-stream'] = (
+    value ?? 'application/octet-stream'
+  ).split(';', 1);
+
+  return mimeType.trim().toLowerCase();
 }

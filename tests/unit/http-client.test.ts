@@ -1,254 +1,425 @@
-import { MockAgent, errors } from 'undici';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MockAgent } from 'undici';
 
-import { createLogger } from '../../src/shared/logger.js';
-import { SourceHttpClient } from '../../src/sources/http-client.js';
+import {
+  SourceHttpClient,
+  type TextFetchPolicy,
+} from '../../src/sources/http-client.js';
+
+function createTextPolicy(
+  overrides: Partial<TextFetchPolicy> = {},
+): TextFetchPolicy {
+  return {
+    expectedTypes: ['text/plain'],
+    maxBytes: 1024,
+    timeoutMs: 250,
+    ...overrides,
+  };
+}
+
+const agents: MockAgent[] = [];
+
+afterEach(async () => {
+  while (agents.length > 0) {
+    const agent = agents.pop();
+
+    if (agent) {
+      await agent.close();
+    }
+  }
+});
 
 describe('SourceHttpClient', () => {
-  const agents: MockAgent[] = [];
-
-  afterEach(async () => {
-    await Promise.all(agents.map(async (agent) => agent.close()));
-    agents.length = 0;
-  });
-
   function createAgent(): MockAgent {
-    const agent = new MockAgent();
+    const agent = new MockAgent({ enableCallHistory: true });
     agent.disableNetConnect();
     agents.push(agent);
     return agent;
   }
 
-  it('rejects requests whose host is not allow-listed', async () => {
+  it('returns text bodies for configured hosts, normalized mime types, and a user-agent header', async () => {
+    const agent = createAgent();
+    const configuredUrl = new URL('https://allowed.example/feed.txt');
+
+    agent
+      .get(configuredUrl.origin)
+      .intercept({ path: '/feed.txt', method: 'GET' })
+      .reply(200, '<main>ok</main>', {
+        headers: { 'content-type': 'TEXT/HTML; charset=utf-8' },
+      });
+
+    const client = new SourceHttpClient({
+      allowedSourceUrls: [configuredUrl.toString()],
+      dispatcher: agent,
+      sleeper: () => Promise.resolve(),
+      jitter: () => 0,
+    });
+
+    const response = await client.getText(
+      configuredUrl,
+      createTextPolicy({ expectedTypes: ['text/html'] }),
+    );
+
+    expect(response).toMatchObject({
+      body: '<main>ok</main>',
+      finalUrl: configuredUrl,
+      contentType: 'text/html',
+    });
+    expect(
+      agent.getCallHistory()?.firstCall()?.headers?.['user-agent'],
+    ).toContain('bsag-public-operations-briefing');
+  });
+
+  it('rejects requests whose host is not allow-listed with a machine-readable code', async () => {
     const agent = createAgent();
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: ['https://allowed.example/feed.txt'],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
     await expect(
-      client.getText('https://denied.example/feed.txt', {
-        sourceId: 'bsag',
-        timeoutMs: 250,
-        maxBytes: 1024,
-        expectedMimeTypes: ['text/plain'],
-      }),
-    ).rejects.toThrow(/allow-listed host/i);
+      client.getText(
+        new URL('https://denied.example/feed.txt'),
+        createTextPolicy(),
+      ),
+    ).rejects.toMatchObject({
+      code: 'HOST_NOT_ALLOWED',
+    });
   });
 
-  it('retries transient failures at most twice with deterministic backoff', async () => {
+  it('maps timeouts to a retryable source timeout error', async () => {
     const agent = createAgent();
-    const pool = agent.get('https://allowed.example');
+    const url = new URL('https://allowed.example/slow');
+
+    agent
+      .get(url.origin)
+      .intercept({ path: '/slow', method: 'GET' })
+      .reply(200, '<main>slow</main>', {
+        headers: { 'content-type': 'text/html' },
+      })
+      .delay(100)
+      .persist();
+
+    const client = new SourceHttpClient({
+      allowedSourceUrls: [url.toString()],
+      dispatcher: agent,
+      sleeper: () => Promise.resolve(),
+      jitter: () => 0,
+    });
+
+    await expect(
+      client.getText(
+        url,
+        createTextPolicy({
+          expectedTypes: ['text/html'],
+          timeoutMs: 10,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: 'SOURCE_TIMEOUT',
+      retryable: true,
+    });
+  });
+
+  it('maps socket failures to retryable network errors and retries with the default sleeper', async () => {
+    const agent = createAgent();
+    const url = new URL('https://allowed.example/socket');
+    const pool = agent.get(url.origin);
+
+    pool
+      .intercept({ path: '/socket', method: 'GET' })
+      .replyWithError(new Error('socket hang up'));
+    pool.intercept({ path: '/socket', method: 'GET' }).reply(200, 'ok', {
+      headers: { 'content-type': 'text/plain' },
+    });
+
+    vi.useFakeTimers();
+
+    try {
+      const client = new SourceHttpClient({
+        allowedSourceUrls: [url.toString()],
+        dispatcher: agent,
+        jitter: () => 0,
+      });
+
+      const responsePromise = client.getText(url, createTextPolicy());
+
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(100);
+
+      const response = await responsePromise;
+
+      expect(response).toMatchObject({
+        body: 'ok',
+        attempts: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries transient 503 responses and then succeeds', async () => {
+    const agent = createAgent();
+    const url = new URL('https://allowed.example/flaky');
     const sleepCalls: number[] = [];
+    const pool = agent.get(url.origin);
 
     pool
       .intercept({ path: '/flaky', method: 'GET' })
       .reply(503, 'unavailable', {
         headers: { 'content-type': 'text/plain' },
       });
+    pool.intercept({ path: '/flaky', method: 'GET' }).reply(200, 'ok', {
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
 
-    pool
-      .intercept({ path: '/flaky', method: 'GET' })
-      .replyWithError(new errors.SocketError('socket closed'));
+    const client = new SourceHttpClient({
+      allowedSourceUrls: [url.toString()],
+      dispatcher: agent,
+      sleeper: (delayMs) => {
+        sleepCalls.push(delayMs);
+        return Promise.resolve();
+      },
+      jitter: () => 0,
+    });
 
-    pool
-      .intercept({ path: '/flaky', method: 'GET' })
-      .reply(200, 'ok', {
-        headers: { 'content-type': 'text/plain; charset=utf-8' },
+    const response = await client.getText(url, createTextPolicy());
+
+    expect(response.body).toBe('ok');
+    expect(sleepCalls).toEqual([100]);
+    const callHistory = agent.getCallHistory();
+
+    expect(callHistory).toBeDefined();
+    expect(
+      callHistory
+        ? callHistory.calls().filter((call) => call.path === '/flaky')
+        : undefined,
+    ).toHaveLength(2);
+  });
+
+  it('does not retry non-transient 404 responses', async () => {
+    const agent = createAgent();
+    const url = new URL('https://allowed.example/missing');
+
+    agent
+      .get(url.origin)
+      .intercept({ path: '/missing', method: 'GET' })
+      .reply(404, 'missing', {
+        headers: { 'content-type': 'text/plain' },
       });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async (delayMs) => {
-        sleepCalls.push(delayMs);
-      },
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
-    const response = await client.getText('https://allowed.example/flaky', {
-      sourceId: 'bsag',
-      timeoutMs: 250,
-      maxBytes: 1024,
-      expectedMimeTypes: ['text/plain'],
-    });
+    await expect(client.getText(url, createTextPolicy())).rejects.toMatchObject(
+      {
+        code: 'SOURCE_HTTP_STATUS',
+        statusCode: 404,
+      },
+    );
 
-    expect(response.text).toBe('ok');
-    expect(response.mimeType).toBe('text/plain');
-    expect(response.attempts).toBe(3);
-    expect(sleepCalls).toEqual([100, 200]);
+    const callHistory = agent.getCallHistory();
+
+    expect(callHistory).toBeDefined();
+    expect(
+      callHistory
+        ? callHistory.calls().filter((call) => call.path === '/missing')
+        : undefined,
+    ).toHaveLength(1);
   });
 
-  it('rejects unexpected mime types after normalization', async () => {
+  it('rejects unexpected content types after normalization', async () => {
     const agent = createAgent();
-    const pool = agent.get('https://allowed.example');
+    const url = new URL('https://allowed.example/rss');
 
-    pool.intercept({ path: '/rss', method: 'GET' }).reply(200, '<rss />', {
-      headers: { 'content-type': 'application/rss+xml; charset=utf-8' },
-    });
+    agent
+      .get(url.origin)
+      .intercept({ path: '/rss', method: 'GET' })
+      .reply(200, '<rss />', {
+        headers: { 'content-type': 'application/rss+xml; charset=utf-8' },
+      });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
     await expect(
-      client.getText('https://allowed.example/rss', {
-        sourceId: 'vmz_rss',
-        timeoutMs: 250,
-        maxBytes: 1024,
-        expectedMimeTypes: ['text/html'],
-      }),
-    ).rejects.toThrow(/unexpected mime/i);
+      client.getText(url, createTextPolicy({ expectedTypes: ['text/html'] })),
+    ).rejects.toMatchObject({
+      code: 'SOURCE_CONTENT_TYPE',
+    });
   });
 
-  it('rejects responses whose content-length exceeds the configured limit', async () => {
+  it('rejects declared content-length values that exceed the byte limit before reading the body', async () => {
     const agent = createAgent();
-    const pool = agent.get('https://allowed.example');
+    const url = new URL('https://allowed.example/large-header');
 
-    pool.intercept({ path: '/large-header', method: 'GET' }).reply(200, 'abcd', {
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-length': '4',
-      },
-    });
+    agent
+      .get(url.origin)
+      .intercept({ path: '/large-header', method: 'GET' })
+      .reply(200, 'abc', {
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-length': '10',
+        },
+      });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
     await expect(
-      client.getBytes('https://allowed.example/large-header', {
-        sourceId: 'vbn_realtime',
-        timeoutMs: 250,
+      client.getBytes(url, {
+        expectedTypes: ['application/octet-stream'],
         maxBytes: 3,
-        expectedMimeTypes: ['application/octet-stream'],
+        timeoutMs: 250,
       }),
-    ).rejects.toThrow(/content-length/i);
+    ).rejects.toMatchObject({
+      code: 'SOURCE_RESPONSE_TOO_LARGE',
+    });
   });
 
   it('rejects streamed bodies that exceed the configured byte limit', async () => {
     const agent = createAgent();
-    const pool = agent.get('https://allowed.example');
+    const url = new URL('https://allowed.example/large-stream');
 
-    pool.intercept({ path: '/large-stream', method: 'GET' }).reply(200, 'abcdef', {
-      headers: {
-        'content-type': 'application/octet-stream',
-      },
-    });
+    agent
+      .get(url.origin)
+      .intercept({ path: '/large-stream', method: 'GET' })
+      .reply(200, 'abcdef', {
+        headers: { 'content-type': 'application/octet-stream' },
+      });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
     await expect(
-      client.getBytes('https://allowed.example/large-stream', {
-        sourceId: 'vbn_realtime',
-        timeoutMs: 250,
+      client.getBytes(url, {
+        expectedTypes: ['application/octet-stream'],
         maxBytes: 3,
-        expectedMimeTypes: ['application/octet-stream'],
+        timeoutMs: 250,
       }),
-    ).rejects.toThrow(/byte limit/i);
+    ).rejects.toMatchObject({
+      code: 'SOURCE_RESPONSE_TOO_LARGE',
+    });
   });
 
-  it('follows redirects up to three hops and validates redirect hosts', async () => {
+  it('follows allow-listed redirects whose location header is an array', async () => {
     const agent = createAgent();
-    const pool = agent.get('https://allowed.example');
+    const url = new URL('https://allowed.example/redirect');
+    const finalUrl = new URL('https://allowed.example/final');
+    const pool = agent.get(url.origin);
 
-    pool.intercept({ path: '/one', method: 'GET' }).reply(302, '', {
-      headers: { location: 'https://allowed.example/two' },
+    pool.intercept({ path: '/redirect', method: 'GET' }).reply(302, '', {
+      headers: { location: [finalUrl.toString()] },
     });
-    pool.intercept({ path: '/two', method: 'GET' }).reply(302, '', {
-      headers: { location: '/three' },
-    });
-    pool.intercept({ path: '/three', method: 'GET' }).reply(200, 'done', {
+    pool.intercept({ path: '/final', method: 'GET' }).reply(200, 'done', {
       headers: { 'content-type': 'text/plain' },
     });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
-    const response = await client.getText('https://allowed.example/one', {
-      sourceId: 'bsag',
-      timeoutMs: 250,
-      maxBytes: 1024,
-      expectedMimeTypes: ['text/plain'],
-    });
+    const response = await client.getText(url, createTextPolicy());
 
-    expect(response.text).toBe('done');
-    expect(response.url).toBe('https://allowed.example/three');
-    expect(response.redirectCount).toBe(2);
+    expect(response).toMatchObject({
+      body: 'done',
+      finalUrl,
+      redirectCount: 1,
+    });
   });
 
-  it('rejects redirects that leave the allow-listed host or exceed three hops', async () => {
+  it('rejects redirect responses that omit a location header', async () => {
     const agent = createAgent();
-    const allowedPool = agent.get('https://allowed.example');
-    const deniedPool = agent.get('https://denied.example');
+    const url = new URL('https://allowed.example/missing-location');
 
-    allowedPool.intercept({ path: '/escape', method: 'GET' }).reply(302, '', {
-      headers: { location: 'https://denied.example/blocked' },
-    });
-    deniedPool.intercept({ path: '/blocked', method: 'GET' }).reply(200, 'nope', {
-      headers: { 'content-type': 'text/plain' },
-    });
-
-    allowedPool.intercept({ path: '/hop1', method: 'GET' }).reply(302, '', {
-      headers: { location: '/hop2' },
-    });
-    allowedPool.intercept({ path: '/hop2', method: 'GET' }).reply(302, '', {
-      headers: { location: '/hop3' },
-    });
-    allowedPool.intercept({ path: '/hop3', method: 'GET' }).reply(302, '', {
-      headers: { location: '/hop4' },
-    });
-    allowedPool.intercept({ path: '/hop4', method: 'GET' }).reply(302, '', {
-      headers: { location: '/hop5' },
-    });
+    agent
+      .get(url.origin)
+      .intercept({ path: '/missing-location', method: 'GET' })
+      .reply(302, '', { headers: {} });
 
     const client = new SourceHttpClient({
-      allowedHost: 'allowed.example',
+      allowedSourceUrls: [url.toString()],
       dispatcher: agent,
-      logger: createLogger(),
-      sleeper: async () => {},
+      sleeper: () => Promise.resolve(),
       jitter: () => 0,
     });
 
-    await expect(
-      client.getText('https://allowed.example/escape', {
-        sourceId: 'bsag',
-        timeoutMs: 250,
-        maxBytes: 1024,
-        expectedMimeTypes: ['text/plain'],
-      }),
-    ).rejects.toThrow(/redirect host/i);
+    await expect(client.getText(url, createTextPolicy())).rejects.toMatchObject(
+      {
+        code: 'SOURCE_REDIRECT_LOCATION_MISSING',
+      },
+    );
+  });
 
-    await expect(
-      client.getText('https://allowed.example/hop1', {
-        sourceId: 'bsag',
-        timeoutMs: 250,
-        maxBytes: 1024,
-        expectedMimeTypes: ['text/plain'],
-      }),
-    ).rejects.toThrow(/too many redirects/i);
+  it('rejects responses that exceed the configured redirect limit', async () => {
+    const agent = createAgent();
+    const url = new URL('https://allowed.example/redirect-limit');
+
+    agent
+      .get(url.origin)
+      .intercept({ path: '/redirect-limit', method: 'GET' })
+      .reply(302, '', {
+        headers: { location: 'https://allowed.example/final' },
+      });
+
+    const client = new SourceHttpClient({
+      allowedSourceUrls: [url.toString()],
+      dispatcher: agent,
+      sleeper: () => Promise.resolve(),
+      jitter: () => 0,
+      maxRedirects: 0,
+    });
+
+    await expect(client.getText(url, createTextPolicy())).rejects.toMatchObject(
+      {
+        code: 'SOURCE_TOO_MANY_REDIRECTS',
+      },
+    );
+  });
+
+  it('rejects redirects that leave the configured allow-list', async () => {
+    const agent = createAgent();
+    const url = new URL('https://allowed.example/escape');
+
+    agent
+      .get(url.origin)
+      .intercept({ path: '/escape', method: 'GET' })
+      .reply(302, '', {
+        headers: { location: 'https://denied.example/blocked' },
+      });
+
+    const client = new SourceHttpClient({
+      allowedSourceUrls: [url.toString()],
+      dispatcher: agent,
+      sleeper: () => Promise.resolve(),
+      jitter: () => 0,
+    });
+
+    await expect(client.getText(url, createTextPolicy())).rejects.toMatchObject(
+      {
+        code: 'REDIRECT_HOST_NOT_ALLOWED',
+      },
+    );
   });
 });

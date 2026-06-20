@@ -1,3 +1,4 @@
+import { Buffer } from 'node:buffer';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from 'vitest';
@@ -12,8 +13,10 @@ describe('logger', () => {
   it('writes newline-delimited JSON entries with async-local context', () => {
     const destination = new PassThrough();
     const chunks: string[] = [];
-    destination.on('data', (chunk) => {
-      chunks.push(chunk.toString('utf8'));
+    destination.on('data', (chunk: Buffer | string) => {
+      chunks.push(
+        typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'),
+      );
     });
 
     const logger = createLogger({ destination });
@@ -48,11 +51,15 @@ describe('logger', () => {
       expect(getLogContext()).toMatchObject({ requestId: 'req-outer' });
 
       await withLogContext({ toolCallId: 'tool-inner' }, async () => {
+        await Promise.resolve();
+
         expect(getLogContext()).toMatchObject({
           requestId: 'req-outer',
           toolCallId: 'tool-inner',
         });
       });
+
+      await Promise.resolve();
 
       expect(getLogContext()).toMatchObject({ requestId: 'req-outer' });
       expect(getLogContext().toolCallId).toBeUndefined();

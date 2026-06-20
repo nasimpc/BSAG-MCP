@@ -19,10 +19,7 @@ export interface LogContext {
 const storage = new AsyncLocalStorage<Readonly<LogContext>>();
 const EMPTY_CONTEXT: Readonly<LogContext> = Object.freeze({});
 
-export function withLogContext<T>(
-  context: LogContext,
-  callback: () => T,
-): T {
+export function withLogContext<T>(context: LogContext, callback: () => T): T {
   const current = storage.getStore() ?? EMPTY_CONTEXT;
 
   return storage.run(
