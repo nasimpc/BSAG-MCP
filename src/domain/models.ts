@@ -17,13 +17,17 @@ export interface Provenance {
 
 export interface DelayObservation {
   line_id: string;
+  entity_id?: string;
   direction?: string;
   stop_name?: string;
   scheduled_at?: string;
   observed_at: string;
   delay_seconds: number;
+  has_usable_delay?: boolean;
+  schedule_relationship?: 'scheduled' | 'skipped' | 'canceled';
   trip_id?: string;
   stop_sequence?: number;
+  update_count?: number;
   provenance: Provenance;
 }
 
@@ -77,6 +81,7 @@ export interface LineHealth {
   coverage_ratio: number;
   average_delay_seconds: number;
   median_delay_seconds: number;
+  p95_delay_seconds: number;
   max_delay_seconds: number;
   on_time_percentage: number;
   cancellations?: number;

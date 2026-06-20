@@ -33,13 +33,19 @@ const provenanceSchema = z.object({
 
 const delayObservationSchema = z.object({
   line_id: z.string().min(1),
+  entity_id: z.string().min(1).optional(),
   direction: z.string().min(1).optional(),
   stop_name: z.string().min(1).optional(),
   scheduled_at: z.string().min(1).optional(),
   observed_at: z.string().min(1),
   delay_seconds: z.number().int(),
+  has_usable_delay: z.boolean().optional(),
+  schedule_relationship: z
+    .enum(['scheduled', 'skipped', 'canceled'])
+    .optional(),
   trip_id: z.string().min(1).optional(),
   stop_sequence: z.number().int().optional(),
+  update_count: z.number().int().min(0).optional(),
   provenance: provenanceSchema,
 });
 
@@ -83,13 +89,17 @@ interface SnapshotRow {
 
 interface DelayObservationRow {
   lineId: string;
+  entityId: string | null;
   direction: string | null;
   stopName: string | null;
   scheduledAt: string | null;
   observedAt: string;
   delaySeconds: number;
+  hasUsableDelay: number;
+  scheduleRelationship: string | null;
   tripId: string | null;
   stopSequence: number | null;
+  updateCount: number;
   provenanceJson: string;
 }
 
@@ -288,26 +298,34 @@ class SqliteRealtimeRepository implements RealtimeRepository {
         string | null,
         string | null,
         string | null,
+        string | null,
         string,
         number,
+        number,
+        string | null,
         string | null,
         number | null,
+        number,
         string,
       ]
     >(
       `INSERT INTO delay_observations (
          snapshot_id,
          line_id,
+         entity_id,
          direction,
          stop_name,
          scheduled_at,
          observed_at,
          delay_seconds,
+         has_usable_delay,
+         schedule_relationship,
          trip_id,
          stop_sequence,
+         update_count,
          provenance_json
        )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.#findSnapshotForLineStatement = database.prepare<
       [string, string],
@@ -327,13 +345,17 @@ class SqliteRealtimeRepository implements RealtimeRepository {
     >(
       `SELECT
          line_id AS lineId,
+         entity_id AS entityId,
          direction,
          stop_name AS stopName,
          scheduled_at AS scheduledAt,
          observed_at AS observedAt,
          delay_seconds AS delaySeconds,
+         has_usable_delay AS hasUsableDelay,
+         schedule_relationship AS scheduleRelationship,
          trip_id AS tripId,
          stop_sequence AS stopSequence,
+         update_count AS updateCount,
          provenance_json AS provenanceJson
        FROM delay_observations
        WHERE snapshot_id = ? AND line_id = ?
@@ -366,13 +388,17 @@ class SqliteRealtimeRepository implements RealtimeRepository {
           this.#insertObservationStatement.run(
             snapshotRow.id,
             observation.line_id,
+            observation.entity_id ?? null,
             observation.direction ?? null,
             observation.stop_name ?? null,
             observation.scheduled_at ?? null,
             observation.observed_at,
             observation.delay_seconds,
+            observation.has_usable_delay ?? true ? 1 : 0,
+            observation.schedule_relationship ?? null,
             observation.trip_id ?? null,
             observation.stop_sequence ?? null,
+            observation.update_count ?? 1,
             serializeJson(provenanceSchema, observation.provenance),
           );
         }
@@ -793,6 +819,7 @@ function normalizeDelayObservation(
 ): DelayObservation {
   return {
     line_id: value.line_id,
+    ...(value.entity_id === undefined ? {} : { entity_id: value.entity_id }),
     ...(value.direction === undefined ? {} : { direction: value.direction }),
     ...(value.stop_name === undefined ? {} : { stop_name: value.stop_name }),
     ...(value.scheduled_at === undefined
@@ -800,10 +827,19 @@ function normalizeDelayObservation(
       : { scheduled_at: value.scheduled_at }),
     observed_at: value.observed_at,
     delay_seconds: value.delay_seconds,
+    ...(value.has_usable_delay === undefined
+      ? {}
+      : { has_usable_delay: value.has_usable_delay }),
+    ...(value.schedule_relationship === undefined
+      ? {}
+      : { schedule_relationship: value.schedule_relationship }),
     ...(value.trip_id === undefined ? {} : { trip_id: value.trip_id }),
     ...(value.stop_sequence === undefined
       ? {}
       : { stop_sequence: value.stop_sequence }),
+    ...(value.update_count === undefined
+      ? {}
+      : { update_count: value.update_count }),
     provenance: normalizeProvenance(value.provenance),
   };
 }
@@ -845,13 +881,19 @@ function toDelayObservation(row: DelayObservationRow): DelayObservation {
   return normalizeDelayObservation(
     delayObservationSchema.parse({
       line_id: row.lineId,
+      ...(row.entityId === null ? {} : { entity_id: row.entityId }),
       ...(row.direction === null ? {} : { direction: row.direction }),
       ...(row.stopName === null ? {} : { stop_name: row.stopName }),
       ...(row.scheduledAt === null ? {} : { scheduled_at: row.scheduledAt }),
       observed_at: row.observedAt,
       delay_seconds: row.delaySeconds,
+      has_usable_delay: row.hasUsableDelay === 1,
+      ...(row.scheduleRelationship === null
+        ? {}
+        : { schedule_relationship: row.scheduleRelationship }),
       ...(row.tripId === null ? {} : { trip_id: row.tripId }),
       ...(row.stopSequence === null ? {} : { stop_sequence: row.stopSequence }),
+      update_count: row.updateCount,
       provenance: parseJson(provenanceSchema, row.provenanceJson),
     }),
   );

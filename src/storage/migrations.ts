@@ -85,6 +85,24 @@ export const migrations: readonly Migration[] = [
       `);
     },
   },
+  {
+    id: '002_realtime_observation_enrichment',
+    apply(database) {
+      database.exec(`
+        ALTER TABLE delay_observations
+          ADD COLUMN entity_id TEXT;
+
+        ALTER TABLE delay_observations
+          ADD COLUMN has_usable_delay INTEGER NOT NULL DEFAULT 1;
+
+        ALTER TABLE delay_observations
+          ADD COLUMN schedule_relationship TEXT;
+
+        ALTER TABLE delay_observations
+          ADD COLUMN update_count INTEGER NOT NULL DEFAULT 1;
+      `);
+    },
+  },
 ];
 
 export function applyMigrations(database: Database.Database): void {
