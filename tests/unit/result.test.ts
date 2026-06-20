@@ -18,31 +18,38 @@ describe('result helpers', () => {
     });
   });
 
-  it('combines outcomes into a partial envelope when any source warns', () => {
+  it('combines outcomes into a partial result when any source warns', () => {
     const now = '2026-06-20T08:00:00.000Z';
 
     expect(
-      combineOutcomes(
-        [
-          { data: [1], sources: [], warnings: [] },
-          {
-            data: [2],
-            sources: [],
-            warnings: [
-              {
-                source: 'vmz_web',
-                code: 'SOURCE_TIMEOUT',
-                message: 'timed out',
-                occurred_at: now,
-                retryable: true,
-              },
-            ],
-          },
-        ],
-        now,
-      ),
-    ).toMatchObject({
+      combineOutcomes([
+        { data: [1], sources: [], warnings: [] },
+        {
+          data: [2],
+          sources: [],
+          warnings: [
+            {
+              source: 'vmz_web',
+              code: 'SOURCE_TIMEOUT',
+              message: 'timed out',
+              occurred_at: now,
+              retryable: true,
+            },
+          ],
+        },
+      ]),
+    ).toEqual({
       data: [1, 2],
+      sources: [],
+      warnings: [
+        {
+          source: 'vmz_web',
+          code: 'SOURCE_TIMEOUT',
+          message: 'timed out',
+          occurred_at: now,
+          retryable: true,
+        },
+      ],
       status: 'partial',
     });
   });

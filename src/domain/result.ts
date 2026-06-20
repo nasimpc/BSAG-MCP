@@ -11,6 +11,10 @@ export interface SourceOutcome<T> {
   warnings: SourceWarning[];
 }
 
+export interface CombinedOutcome<T> extends SourceOutcome<T> {
+  status: 'complete' | 'partial';
+}
+
 export function envelope<T>(
   generatedAt: string,
   outcome: SourceOutcome<T>,
@@ -27,13 +31,17 @@ export function envelope<T>(
 
 export function combineOutcomes<T>(
   outcomes: SourceOutcome<T[]>[],
-  generatedAt: string,
-): ToolEnvelope<T[]> {
-  return envelope(generatedAt, {
+): CombinedOutcome<T[]> {
+  const combined = {
     data: outcomes.flatMap((outcome) => outcome.data),
     sources: outcomes.flatMap((outcome) => outcome.sources),
     warnings: outcomes.flatMap((outcome) => outcome.warnings),
-  });
+  };
+
+  return {
+    ...combined,
+    status: combined.warnings.length === 0 ? 'complete' : 'partial',
+  };
 }
 
 export function warning(
