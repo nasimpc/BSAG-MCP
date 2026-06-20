@@ -91,10 +91,21 @@ export interface LineHealth {
 }
 
 export interface RiskContribution {
-  source: string;
-  label: string;
-  score_delta: number;
-  rationale: string;
+  kind:
+    | 'delay'
+    | 'on_time'
+    | 'coverage'
+    | 'notice'
+    | 'roadwork'
+    | 'event'
+    | 'overlap';
+  points: number;
+  reason: string;
+}
+
+export interface RiskWarning {
+  code: string;
+  message: string;
 }
 
 export interface RiskAssessment {
@@ -103,7 +114,8 @@ export interface RiskAssessment {
   score: number;
   band: 'low' | 'moderate' | 'high' | 'severe';
   contributions: RiskContribution[];
-  confidence: number;
+  confidence: 'low' | 'medium' | 'high';
+  warnings: RiskWarning[];
 }
 
 export interface ToolEnvelope<T> {
