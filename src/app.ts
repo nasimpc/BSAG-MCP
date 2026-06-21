@@ -22,7 +22,7 @@ import { parseVbnNoticesHtml } from './sources/vbn-notices.js';
 import { parseBsagNoticesHtml } from './sources/bsag-notices.js';
 import { VbnRealtimeSource } from './sources/vbn-realtime.js';
 import { VmzSource } from './sources/vmz.js';
-import { parseBremenEventsHtml } from './sources/bremen-events.js';
+import { fetchBremenEvents } from './sources/bremen-events.js';
 import { LineHealthService } from './services/line-health.js';
 import { ServiceNoticeService } from './services/service-notices.js';
 import { ExternalImpactService } from './services/external-impacts.js';
@@ -193,10 +193,12 @@ export function createApplication(
       },
       {
         sourceIds: ['bremen_events'],
-        fetch: () =>
+        fetch: (input) =>
           fetchBremenEvents({
             client: httpClient,
             clock,
+            dateFrom: input.date_from,
+            dateTo: input.date_to,
             url: new URL(coreConfig.sources.bremenEventsUrl),
           }),
       },
@@ -317,15 +319,4 @@ async function fetchVbnNotices(options: {
   const response = await options.client.getText(options.url, HTML_FETCH_POLICY);
 
   return parseVbnNoticesHtml(response.body, response.finalUrl, fetchedAt);
-}
-
-async function fetchBremenEvents(options: {
-  client: SourceHttpClient;
-  clock: Clock;
-  url: URL;
-}) {
-  const fetchedAt = options.clock.now().toISOString();
-  const response = await options.client.getText(options.url, HTML_FETCH_POLICY);
-
-  return parseBremenEventsHtml(response.body, response.finalUrl, fetchedAt);
 }

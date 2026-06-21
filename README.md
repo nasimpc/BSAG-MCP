@@ -84,6 +84,11 @@ The server does not auto-load `.env`; use Node's `--env-file` flag or export var
 
 Public source URLs are also configurable; see [.env.example](.env.example).
 
+The Bremen events source uses the public `login.bremen.de` event-search API via
+`curl --http1.1` because the HTML calendar page is Cloudflare-challenged for
+Node HTTP clients. The Docker image installs `curl`; non-Docker hosts should
+provide it on `PATH`.
+
 ## Corridor editing
 
 Corridors are editable in [config/corridors.json](config/corridors.json). The file maps public line IDs and conservative place-name aliases. It does not claim geometric route overlap.

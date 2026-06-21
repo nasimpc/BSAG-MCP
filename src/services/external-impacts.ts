@@ -34,7 +34,9 @@ export interface MatchedExternalImpact extends ExternalImpact {
 
 export interface ExternalImpactSource {
   readonly sourceIds: readonly SourceId[];
-  fetch(): Promise<SourceOutcome<ExternalImpact[]>>;
+  fetch(
+    input: GetExternalImpactsInput,
+  ): Promise<SourceOutcome<ExternalImpact[]>>;
 }
 
 export interface ExternalImpactServiceOptions {
@@ -68,7 +70,7 @@ export class ExternalImpactService {
     const refreshes = await Promise.allSettled(
       this.#sources.map(async (source) => ({
         sourceIds: source.sourceIds,
-        outcome: await source.fetch(),
+        outcome: await source.fetch(input),
       })),
     );
     const warnings: SourceWarning[] = [];

@@ -9,7 +9,7 @@ import {
 } from '../../src/sources/http-client.js';
 import { VbnRealtimeSource } from '../../src/sources/vbn-realtime.js';
 import { parseBsagNoticesHtml } from '../../src/sources/bsag-notices.js';
-import { parseBremenEventsHtml } from '../../src/sources/bremen-events.js';
+import { fetchBremenEvents } from '../../src/sources/bremen-events.js';
 import { parseVbnNoticesHtml } from '../../src/sources/vbn-notices.js';
 import { VmzSource } from '../../src/sources/vmz.js';
 
@@ -89,17 +89,11 @@ describeLive('public official sources', () => {
       }),
       reportOutcome('vmz', () => vmzSource.fetch()),
       reportOutcome('bremen_events', async () => {
-        const fetchedAt = clock.now().toISOString();
-        const response = await client.getText(
-          new URL(config.sources.bremenEventsUrl),
-          HTML_FETCH_POLICY,
-        );
-
-        return parseBremenEventsHtml(
-          response.body,
-          response.finalUrl,
-          fetchedAt,
-        );
+        return fetchBremenEvents({
+          client,
+          clock,
+          url: new URL(config.sources.bremenEventsUrl),
+        });
       }),
     ]);
 
