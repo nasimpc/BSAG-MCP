@@ -236,11 +236,12 @@ describe('ShiftBriefService', () => {
     expect(overlap?.summary).toContain(
       'realtime delays and VMZ roadworks overlap',
     );
-    expect(
-      outcome.data.major_events.some(
-        (event) => event.title === 'Weserpark summer concert',
-      ),
-    ).toBe(true);
+    const majorEvent = outcome.data.major_events.find(
+      (event) => event.title === 'Weserpark summer concert',
+    );
+
+    expect(majorEvent).toBeDefined();
+    expect(majorEvent).not.toHaveProperty('corridor_matches');
     expect(outcome.warnings).toContainEqual(
       expect.objectContaining({
         source: 'bsag',

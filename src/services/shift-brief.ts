@@ -236,9 +236,9 @@ export class ShiftBriefService {
         candidate_lines: candidateLines,
         line_assessments: lineAssessments,
         corridor_assessments: corridorAssessments,
-        major_events: impactsOutcome.data.filter(
-          (impact) => impact.category === 'event',
-        ),
+        major_events: impactsOutcome.data
+          .filter((impact) => impact.category === 'event')
+          .map(toExternalImpact),
         overlaps,
         communications,
         operational_actions: lineAssessments
@@ -300,6 +300,32 @@ function buildShiftWindow(date: string): ShiftWindow {
       new TZDate(year, month - 1, day, 10, 0, 0, 0, BERLIN_TIMEZONE).getTime(),
     ).toISOString(),
   };
+}
+
+function toExternalImpact(impact: ExternalImpact): ExternalImpact {
+  const externalImpact: ExternalImpact = {
+    id: impact.id,
+    title: impact.title,
+    summary: impact.summary,
+    corridor_ids: impact.corridor_ids,
+    category: impact.category,
+    severity: impact.severity,
+    provenance: impact.provenance,
+  };
+
+  if (impact.details !== undefined) {
+    externalImpact.details = impact.details;
+  }
+
+  if (impact.starts_at !== undefined) {
+    externalImpact.starts_at = impact.starts_at;
+  }
+
+  if (impact.ends_at !== undefined) {
+    externalImpact.ends_at = impact.ends_at;
+  }
+
+  return externalImpact;
 }
 
 function collectSourceStatuses(

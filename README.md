@@ -151,21 +151,16 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
 
 ### `get_external_impacts`
 
-1. Prompt: For 2026-06-21, list external VMZ and event impacts on the east
-   corridor around Hemelingen, Sebaldsbrück, and Weserpark.
 
-   ```json
-   { "corridors": ["east"], "date_from": "2026-06-21", "date_to": "2026-06-21" }
-   ```
 
-2. Prompt: Check the west corridor from 2026-06-21 through 2026-06-28, including
+1. Prompt: Check the west corridor from 2026-06-21 through 2026-06-28, including
    Walle, Gröpelingen, and Steffensweg-related impacts.
 
    ```json
    { "corridors": ["west"], "date_from": "2026-06-21", "date_to": "2026-06-28" }
    ```
 
-3. Prompt: Find city-centre and north-side external impacts for the Bremen
+2. Prompt: Find city-centre and north-side external impacts for the Bremen
    Tag der Deutschen Einheit event weekend, 2026-10-02 to 2026-10-04.
 
    ```json
@@ -174,6 +169,12 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
      "date_from": "2026-10-02",
      "date_to": "2026-10-04"
    }
+   ```
+3. Prompt: For 2026-06-21, list external VMZ and event impacts on the east
+   corridor around Hemelingen, Sebaldsbrück, and Weserpark.
+
+   ```json
+   { "corridors": ["east"], "date_from": "2026-06-21", "date_to": "2026-06-21" }
    ```
 
 ### `get_service_notices`
@@ -186,14 +187,7 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
    { "line_ids": ["1", "N1"], "since": "2026-06-15T00:00:00+02:00" }
    ```
 
-2. Prompt: Show service notices for line 2 since 2026-06-08, covering the
-   VBN-listed Gleisbauarbeiten and Zeppelintunnel/Sebaldsbrück changes.
-
-   ```json
-   { "line_ids": ["2"], "since": "2026-06-08T00:00:00+02:00" }
-   ```
-
-3. Prompt: Find notices touching Universität-Nord and Bf Sebaldsbrück, two
+2. Prompt: Find notices touching Universität-Nord and Bf Sebaldsbrück, two
    stop names present in the BSAG network material and current VBN notices.
 
    ```json
@@ -242,8 +236,18 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
 
 ### `draft_passenger_information`
 
-This tool does not fetch sources itself; pass it an `issue_summary` copied from
-or summarized from the public source you want to turn into passenger copy.
+This tool does not fetch sources itself. Provide an `issue_summary` by copying
+or paraphrasing the relevant details from VBN notices, BSAG news, or any other
+public source, and the tool will produce ready-to-publish passenger copy in the
+requested format and channel.
+
+> **Note:** In the current read-only server configuration, this tool operates
+> as a drafting aid — output must be reviewed and published manually. Its full
+> potential is realised in a write-enabled MCP workflow: paired with human-in-the-loop 
+> approval step, it can drive an end-to-end
+> communications pipeline from incident detection through to passenger
+> notification, with a human reviewing and approving each draft before it goes
+> live.
 
 1. Prompt: Draft an app update for line 2 passengers: VBN says line 2 is
    diverted from 8 to 29 June 2026 because of track work; Lloydstraße and

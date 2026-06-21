@@ -2,10 +2,16 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it } from 'vitest';
 
-import type { ToolEnvelope } from '../../src/domain/models.js';
+import { loadCorridors } from '../../src/config/corridors.js';
+import type {
+  LineHealth,
+  ServiceNotice,
+  ToolEnvelope,
+} from '../../src/domain/models.js';
 import type { SourceOutcome } from '../../src/domain/result.js';
 import { FixedClock } from '../../src/shared/clock.js';
 import { draftPassengerInformation } from '../../src/services/passenger-information.js';
+import { assessRisk, DEFAULT_RISK_CONFIG } from '../../src/services/risk.js';
 import type {
   GetExternalImpactsInput,
   MatchedExternalImpact,
@@ -13,9 +19,10 @@ import type {
 import type { GetLineHealthInput } from '../../src/services/line-health.js';
 import { createOperationsBriefingMcpServer } from '../../src/mcp/server.js';
 import type { GetServiceNoticesInput } from '../../src/services/service-notices.js';
-import type {
-  ShiftBrief,
-  ShiftBriefBuildInput,
+import {
+  ShiftBriefService,
+  type ShiftBrief,
+  type ShiftBriefBuildInput,
 } from '../../src/services/shift-brief.js';
 
 interface Harness {
@@ -28,6 +35,11 @@ interface Harness {
     shiftBrief: ShiftBriefBuildInput[];
   };
   expectedExternalImpactEnvelope: ToolEnvelope<MatchedExternalImpact[]>;
+}
+
+interface HarnessOptions {
+  externalImpactsOutcome?: SourceOutcome<MatchedExternalImpact[]>;
+  useRealShiftBriefService?: boolean;
 }
 
 function textContent(result: unknown): string {
@@ -57,7 +69,7 @@ function textContent(result: unknown): string {
     .join('\n\n');
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const clock = new FixedClock(new Date('2026-06-20T06:00:00.000Z'));
   const calls: Harness['calls'] = {
     externalImpacts: [],
@@ -66,21 +78,7 @@ async function createHarness(): Promise<Harness> {
     shiftBrief: [],
   };
 
-  const lineHealthOutcome: SourceOutcome<
-    Array<{
-      line_id: string;
-      snapshot_at: string;
-      trip_count: number;
-      observed_trip_count: number;
-      coverage_ratio: number;
-      average_delay_seconds: number;
-      median_delay_seconds: number;
-      p95_delay_seconds: number;
-      max_delay_seconds: number;
-      on_time_percentage: number;
-      warnings: [];
-    }>
-  > = {
+  const lineHealthOutcome: SourceOutcome<LineHealth[]> = {
     data: [
       {
         line_id: '10',
@@ -107,7 +105,7 @@ async function createHarness(): Promise<Harness> {
     warnings: [],
   };
 
-  const externalImpactsOutcome: SourceOutcome<MatchedExternalImpact[]> = {
+  const defaultExternalImpactsOutcome: SourceOutcome<MatchedExternalImpact[]> = {
     data: [
       {
         id: 'vmz-impact-1',
@@ -153,21 +151,10 @@ async function createHarness(): Promise<Harness> {
     ],
   };
 
-  const serviceNoticesOutcome: SourceOutcome<
-    Array<{
-      id: string;
-      title: string;
-      summary: string;
-      lines: string[];
-      stop_names: string[];
-      severity: 'warning';
-      provenance: {
-        source: 'bsag';
-        sourceUrl: string;
-        fetchedAt: string;
-      };
-    }>
-  > = {
+  const externalImpactsOutcome =
+    options.externalImpactsOutcome ?? defaultExternalImpactsOutcome;
+
+  const serviceNoticesOutcome: SourceOutcome<ServiceNotice[]> = {
     data: [
       {
         id: 'bsag-1',
@@ -267,33 +254,55 @@ async function createHarness(): Promise<Harness> {
     warnings: [],
   };
 
+  const externalImpactsService = {
+    get(input: GetExternalImpactsInput) {
+      calls.externalImpacts.push(input);
+      return Promise.resolve(externalImpactsOutcome);
+    },
+  };
+  const lineHealthService = {
+    get(input: GetLineHealthInput) {
+      calls.lineHealth.push(input);
+      return Promise.resolve(lineHealthOutcome);
+    },
+  };
+  const serviceNoticesService = {
+    get(input: GetServiceNoticesInput) {
+      calls.serviceNotices.push(input);
+      return Promise.resolve(serviceNoticesOutcome);
+    },
+  };
+  const realShiftBriefService = new ShiftBriefService({
+    assessRisk,
+    clock,
+    corridors: loadCorridors(`${process.cwd()}/config/corridors.json`),
+    externalImpactsService,
+    lineHealthService,
+    passengerInformation: draftPassengerInformation,
+    riskConfig: DEFAULT_RISK_CONFIG,
+    serviceNoticesService,
+  });
+  const shiftBriefService =
+    options.useRealShiftBriefService === true
+      ? {
+          build(input: ShiftBriefBuildInput) {
+            calls.shiftBrief.push(input);
+            return realShiftBriefService.build(input);
+          },
+        }
+      : {
+          build(input: ShiftBriefBuildInput) {
+            calls.shiftBrief.push(input);
+            return Promise.resolve(shiftBriefOutcome);
+          },
+        };
   const server = createOperationsBriefingMcpServer({
     clock,
     draftPassengerInformation,
-    externalImpactsService: {
-      get(input) {
-        calls.externalImpacts.push(input);
-        return Promise.resolve(externalImpactsOutcome);
-      },
-    },
-    lineHealthService: {
-      get(input) {
-        calls.lineHealth.push(input);
-        return Promise.resolve(lineHealthOutcome);
-      },
-    },
-    serviceNoticesService: {
-      get(input) {
-        calls.serviceNotices.push(input);
-        return Promise.resolve(serviceNoticesOutcome);
-      },
-    },
-    shiftBriefService: {
-      build(input) {
-        calls.shiftBrief.push(input);
-        return Promise.resolve(shiftBriefOutcome);
-      },
-    },
+    externalImpactsService,
+    lineHealthService,
+    serviceNoticesService,
+    shiftBriefService,
   });
   const client = new Client(
     {
@@ -437,6 +446,92 @@ describe('createOperationsBriefingMcpServer', () => {
       expect(textContent(result)).toContain('partial');
       expect(textContent(result)).toContain('SOURCE_TIMEOUT');
       expect(textContent(result)).toContain('VMZ roadworks page timed out');
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('returns a valid shift brief when matched major events include corridor metadata upstream', async () => {
+    const harness = await createHarness({
+      useRealShiftBriefService: true,
+      externalImpactsOutcome: {
+        data: [
+          {
+            id: 'event-impact-1',
+            title: 'Weserpark summer concert',
+            summary: 'Major event at Weserpark may increase demand.',
+            details: 'Weserpark',
+            corridor_ids: ['east'],
+            starts_at: '2026-06-21T16:00:00.000Z',
+            ends_at: '2026-06-21T20:00:00.000Z',
+            category: 'event',
+            severity: 'moderate',
+            provenance: {
+              source: 'bremen_events',
+              sourceUrl: 'https://events.example/weserpark-concert',
+              fetchedAt: '2026-06-20T05:58:00.000Z',
+            },
+            corridor_matches: [
+              {
+                corridor_id: 'east',
+                confidence: 'phrase',
+                matched_aliases: ['weserpark'],
+              },
+            ],
+          },
+        ],
+        sources: [
+          {
+            source: 'bremen_events',
+            fetched_at: '2026-06-20T05:58:00.000Z',
+            age_seconds: 120,
+            stale: false,
+          },
+        ],
+        warnings: [],
+      },
+    });
+
+    try {
+      await harness.client.listTools();
+
+      const result = await harness.client.callTool({
+        name: 'build_shift_brief',
+        arguments: {
+          date: '2026-06-21',
+          corridors: ['east'],
+        },
+      });
+
+      expect(harness.calls.shiftBrief).toEqual([
+        {
+          date: '2026-06-21',
+          corridors: ['east'],
+        },
+      ]);
+      expect(harness.calls.externalImpacts).toEqual([
+        {
+          corridors: ['east'],
+          date_from: '2026-06-21',
+          date_to: '2026-06-21',
+        },
+      ]);
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).toMatchObject({
+        status: 'complete',
+        data: {
+          date: '2026-06-21',
+          major_events: [
+            expect.objectContaining({
+              id: 'event-impact-1',
+              title: 'Weserpark summer concert',
+            }),
+          ],
+        },
+      });
+      expect(JSON.stringify(result.structuredContent)).not.toContain(
+        'corridor_matches',
+      );
     } finally {
       await harness.close();
     }
