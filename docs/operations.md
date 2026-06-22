@@ -92,6 +92,10 @@ Expected outcome:
 - parser drift is surfaced as warnings
 - no source body content is printed
 
+## SQLite retention
+
+Realtime snapshots are stored in SQLite. Old snapshots are pruned according to `RETENTION_DAYS`. Service notices and external impacts are replaced per source refresh and reused as stale cache when a refresh fails.
+
 ## Troubleshooting
 
 - 401 on HTTP mode: missing or invalid bearer token

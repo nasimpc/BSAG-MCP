@@ -1,6 +1,4 @@
-# BSAG Public Operations Briefing MCP Server Implementation Plan
-
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+# BSAG Internal Operations Intelligence MCP Server Implementation Plan
 
 **Goal:** Build a production-quality TypeScript MCP server that combines public VBN, BSAG, VMZ Bremen, and Bremen event data into explainable line health, impact, notice, shift-brief, and passenger-information tools.
 

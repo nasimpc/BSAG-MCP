@@ -1,4 +1,4 @@
-# BSAG Public Operations Briefing MCP Server — Design
+# BSAG Internal Operations Intelligence MCP Server — Design
 
 **Date:** 2026-06-19
 **Status:** Approved for implementation planning
