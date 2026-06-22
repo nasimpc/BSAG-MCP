@@ -186,9 +186,14 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
 
 ### `build_shift_brief`
 
-1. Prompt: Build the east-corridor morning brief for 2026-06-22 and include
-   passenger drafts, focusing on the Steubenstraße, Vahrer Straße, and
-   Hastedter Heerstraße VMZ works alongside any VBN notices.
+These briefs always combine VBN GTFS-Realtime, BSAG/VBN notices, and
+corridor-matched external impacts. Setting `include_comms_draft` requests
+passenger drafts for high-risk lines; it does not guarantee that drafts will be
+returned.
+
+1. Prompt: Build the east-corridor morning brief for 2026-06-22 with comms
+   drafts enabled, focusing on realtime, BSAG/VBN notices, and the
+   Steubenstraße, Vahrer Straße, and Hastedter Heerstraße VMZ works.
 
    ```json
    {
@@ -198,8 +203,9 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
    }
    ```
 
-2. Prompt: Build the west-corridor shift brief for 2026-06-22 without comms,
-   checking Walle, Gröpelingen, and VBN's Steffensweg line-20 notice.
+2. Prompt: Build the west-corridor shift brief for 2026-06-22 without comms
+   drafts, checking realtime, BSAG/VBN notices, Walle and Gröpelingen impacts,
+   and VBN's Steffensweg line-20 notice.
 
    ```json
    {
@@ -210,8 +216,9 @@ inferring a disruption or a clean line. Direct GTFS route IDs are still accepted
    ```
 
 3. Prompt: Build a central and north Bremen brief for 2026-10-03 with comms
-   drafts for the Tag der Deutschen Einheit event weekend referenced by
-   Bremen.de.
+   drafts enabled, checking realtime, BSAG/VBN notices, and any
+   corridor-matched Bremen.de or VMZ impacts for the Tag der Deutschen Einheit
+   weekend.
 
    ```json
    {
