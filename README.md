@@ -10,8 +10,12 @@ This MVP uses only publicly available data sources. A future version with secure
 - external impact detection from VMZ Bremen roadworks, traffic notices, and Bremen event listings
 - service notice lookup across BSAG and VBN sources by line and stop context
 - corridor-level shift brief generation with explainable operational risk signals
-- passenger-information draft generation for concise public-facing disruption messaging
+- passenger-information draft generation for easier public-facing disruption messaging
 - With ecitations, status, source freshness, and warnings when a public source is stale, unavailable, or only partially parsed.
+- Stdio and Streamable HTTP transports backed by the same tool implementations.
+- SQLite persistence for realtime observations, normalized scraped records, source state, and migrations.
+- An editable Bremen corridor configuration containing aliases for lines, route names, stops, streets, districts, venues, and places.
+
 
 ## Requirements
 
